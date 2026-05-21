@@ -65,6 +65,7 @@ const (
 	codecUncompressed uint16 = 0x0000
 	codecCaVideo      uint16 = 0x0003 // RDPGFX_CODECID_CAVIDEO (RemoteFX tiles)
 	codecPlanar       uint16 = 0x0004
+	codecClearCodec   uint16 = 0x0008
 	codecProgressive  uint16 = 0x0009
 	codecAVC420       uint16 = 0x000B
 	codecAVC444       uint16 = 0x000E
@@ -1404,6 +1405,9 @@ func (g *GfxHandler) onWireToSurface1Decode(data []byte, skipHeavy bool) {
 	case codecPlanar:
 		decoded = decodePlanar(bmpData, w, h)
 		owned = true
+	case codecClearCodec:
+		decoded = g.clearCtx.decode(bmpData, w, h)
+		owned = false
 	case codecAVC420:
 		destX := int(s.outputX) + int(left)
 		destY := int(s.outputY) + int(top)
