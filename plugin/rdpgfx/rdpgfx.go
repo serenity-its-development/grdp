@@ -1065,6 +1065,8 @@ func (g *GfxHandler) dispatchDecode(cmdId uint16, data []byte, skipHeavy bool) {
 		g.onWireToSurface2Decode(data, skipHeavy)
 	case cmdidSolidFill:
 		g.onSolidFill(data)
+	case cmdidSurfaceToCache:
+		g.onSurfaceToCache(data)
 	case cmdidCacheToSurface:
 		g.onCacheToSurface(data)
 	case cmdidEvictCacheEntry:
@@ -1839,6 +1841,52 @@ func (g *GfxHandler) onSurfaceToSurface(data []byte) {
 		}
 		g.emitBitmap(dst, dstX, dstY, w, h, dst.data)
 	}
+}
+
+// onSurfaceToCache implements RDPGFX_CMDID_SURFACE_TO_CACHE
+// (MS-RDPEGFX 2.2.2.13). Snapshots a rect from a surface into the cache slot
+// so a later CACHE_TO_SURFACE PDU can blit it back without re-encoding —
+// servers use this aggressively for static UI assets like the lock-screen
+// wallpaper and user avatars, so dropping it leaves the screen blank where
+// those assets would land.
+func (g *GfxHandler) onSurfaceToCache(data []byte) {
+	// surfaceId(2) + cacheKey(8) + cacheSlot(2) + rectSrc(8) = 20 bytes.
+	if len(data) < 20 {
+		return
+	}
+	surfId := binary.LittleEndian.Uint16(data[0:])
+	// cacheKey (8 bytes at offset 2) is for server-side persistence hints;
+	// we key our own map by cacheSlot exactly like CACHE_TO_SURFACE does.
+	cacheSlot := binary.LittleEndian.Uint16(data[10:])
+	left := int(binary.LittleEndian.Uint16(data[12:]))
+	top := int(binary.LittleEndian.Uint16(data[14:]))
+	right := int(binary.LittleEndian.Uint16(data[16:]))
+	bottom := int(binary.LittleEndian.Uint16(data[18:]))
+
+	s, ok := g.surfaces[surfId]
+	if !ok {
+		return
+	}
+	w := right - left
+	h := bottom - top
+	if w <= 0 || h <= 0 {
+		return
+	}
+	if left < 0 || top < 0 || right > int(s.width) || bottom > int(s.height) {
+		return
+	}
+	srcStride := int(s.width) * 4
+	rowBytes := w * 4
+	pixels := make([]byte, w*h*4)
+	for row := 0; row < h; row++ {
+		srcOff := (top+row)*srcStride + left*4
+		dstOff := row * rowBytes
+		if srcOff+rowBytes > len(s.data) {
+			return
+		}
+		copy(pixels[dstOff:dstOff+rowBytes], s.data[srcOff:srcOff+rowBytes])
+	}
+	g.cacheEntries[cacheSlot] = cacheEntry{data: pixels, width: w, height: h}
 }
 
 func (g *GfxHandler) onCacheToSurface(data []byte) {
