@@ -142,7 +142,6 @@ func NewExtendedInfo(auto *ClientAutoReconnect) *RDPExtendedInfo {
 		ClientTimeZone:      make([]byte, 172),
 		ClientSessionId:     0,
 		PerformanceFlags: (PERF_DISABLE_FULLWINDOWDRAG |
-			PERF_DISABLE_WALLPAPER |
 			PERF_DISABLE_MENUANIMATIONS |
 			PERF_ENABLE_FONT_SMOOTHING |
 			PERF_ENABLE_DESKTOP_COMPOSITION),
