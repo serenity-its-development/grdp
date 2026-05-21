@@ -713,21 +713,10 @@ func (ctx *clearCodecCtx) decompressSubcodecsData(r *bytes.Reader, byteCount uin
 
 		case 1:
 			// FreeRDP: clear.c line 543-549 — CLEARCODEC_SUBCODEC_NSCODEC.
-			// The rectangle's bmpData is a self-contained NSCodec
-			// payload (header + RLE-encoded planes).  Decode straight
-			// into the surface buffer at (xStart, yStart).
-			dstOff := (int(yStart)*surfW + int(xStart)) * 4
-			if dstOff < 0 || dstOff >= len(out) {
-				slog.Debug("ClearCodec subcodec 1 dst offset out of range",
-					"off", dstOff, "len", len(out))
-				return false
-			}
 			if !ctx.nsc.Decode(bmpData, int(width), int(height),
 				out, surfW*4, int(xStart), int(yStart)) {
-				slog.Debug("ClearCodec subcodec 1 (NSCodec) decode failed",
-					"rect", []uint16{xStart, yStart, width, height},
-					"bytes", bitmapDataByteCount)
-				return false
+				slog.Debug("ClearCodec: NSCodec subcodec decode failed",
+					"rect", []uint16{xStart, yStart, width, height})
 			}
 
 		case 2:
