@@ -65,10 +65,16 @@ type clearCodecCtx struct {
 	shortVBarStorage      [clearcodecVBarShortSize]clearVBarEntry
 	vBarStorageCursor     int
 	shortVBarStorageCursor int
+	// nsc is the NSCodec sub-decoder used by subcodec id 1.  Held on
+	// the context so its plane buffers are reused across rectangles
+	// (and across frames) instead of being reallocated per call.
+	nsc *nscDecoder
 }
 
 func newClearCodecCtx() *clearCodecCtx {
-	return &clearCodecCtx{}
+	return &clearCodecCtx{
+		nsc: newNSCodec(),
+	}
 }
 
 // resetVBarStorage mirrors clear_reset_vbar_storage (clear.c line 85).
@@ -706,13 +712,23 @@ func (ctx *clearCodecCtx) decompressSubcodecsData(r *bytes.Reader, byteCount uin
 			}
 
 		case 1:
-			// NSCodec — not implemented in Go fork.  We consumed bmpData
-			// from the stream above so the next rectangle parses
-			// correctly; the affected rectangle is left untouched.
-			// FreeRDP: clear.c line 543-549.
-			slog.Debug("ClearCodec subcodec 1 (NSCodec) not implemented",
-				"rect", []uint16{xStart, yStart, width, height},
-				"bytes", bitmapDataByteCount)
+			// FreeRDP: clear.c line 543-549 — CLEARCODEC_SUBCODEC_NSCODEC.
+			// The rectangle's bmpData is a self-contained NSCodec
+			// payload (header + RLE-encoded planes).  Decode straight
+			// into the surface buffer at (xStart, yStart).
+			dstOff := (int(yStart)*surfW + int(xStart)) * 4
+			if dstOff < 0 || dstOff >= len(out) {
+				slog.Debug("ClearCodec subcodec 1 dst offset out of range",
+					"off", dstOff, "len", len(out))
+				return false
+			}
+			if !ctx.nsc.Decode(bmpData, int(width), int(height),
+				out, surfW*4, int(xStart), int(yStart)) {
+				slog.Debug("ClearCodec subcodec 1 (NSCodec) decode failed",
+					"rect", []uint16{xStart, yStart, width, height},
+					"bytes", bitmapDataByteCount)
+				return false
+			}
 
 		case 2:
 			// FreeRDP: clear.c line 551-556 — CLEARCODEC_SUBCODEC_RLEX.
