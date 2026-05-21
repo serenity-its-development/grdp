@@ -583,6 +583,18 @@ func (g *RdpClient) Height() int {
 	return g.height
 }
 
+// ForceRefresh asks the server for a complete display repaint via the
+// suppress→allow output toggle (the same primitive grdp uses internally
+// to recover from H.264 decoder stalls). Useful at session start to make
+// the server resend everything it might assume is already cached on the
+// client side.
+func (g *RdpClient) ForceRefresh() {
+	if g.pdu == nil || !g.eventReady.Load() {
+		return
+	}
+	g.pdu.SendForceRefresh(uint16(g.width), uint16(g.height))
+}
+
 func (g *RdpClient) OnError(f func(e error)) *RdpClient {
 	g.onErrorFn = f
 	if g.pdu != nil {
