@@ -178,6 +178,12 @@ type cacheEntry struct {
 type GfxHandler struct {
 	surfaces     map[uint16]*surface
 	cacheEntries map[uint16]cacheEntry
+	// slotToKey maps an in-RAM cache slot to the 64-bit server-assigned
+	// cacheKey that produced it.  Populated by SurfaceToCache (server-side
+	// writes) and by CacheImportOffer (rehydrated from disk).  Used by
+	// EvictCacheEntry to locate and delete the on-disk file when the
+	// server invalidates a slot.  See persistent_cache.go.
+	slotToKey map[uint16]uint64
 	clearCtx     *clearCodecCtx
 	zgfx         *zgfxContext
 	rfx          *rfxDecoder
@@ -323,6 +329,7 @@ func NewGfxHandler(onBitmap func([]BitmapUpdate)) *GfxHandler {
 	g := &GfxHandler{
 		surfaces:     make(map[uint16]*surface),
 		cacheEntries: make(map[uint16]cacheEntry),
+		slotToKey:    make(map[uint16]uint64),
 		clearCtx:     newClearCodecCtx(),
 		zgfx:         newZgfxContext(),
 		rfx:          newRfxDecoder(),
@@ -1072,13 +1079,13 @@ func (g *GfxHandler) dispatchDecode(cmdId uint16, data []byte, skipHeavy bool) {
 	case cmdidEvictCacheEntry:
 		g.onEvictCacheEntry(data)
 	case cmdidCacheImportOffer:
-		g.onCacheImportOffer()
+		g.onCacheImportOffer(data)
 	case cmdidMapSurfaceToWindow, cmdidMapSurfaceToScaledWindow:
 		// ignored — we don't support per-window mapping
 	case cmdidMapSurfaceToScaledOutput, cmdidMapSurfaceToScaledOutputV2:
 		g.onMapSurfaceToScaledOutput(data)
 	default:
-		slog.Debug("RDPGFX: unhandled cmd", "cmdId", cmdId)
+		slog.Debug("RDPGFX: unhandled cmd", "cmdId", cmdId, "dataLen", len(data))
 	}
 }
 
@@ -1855,8 +1862,9 @@ func (g *GfxHandler) onSurfaceToCache(data []byte) {
 		return
 	}
 	surfId := binary.LittleEndian.Uint16(data[0:])
-	// cacheKey (8 bytes at offset 2) is for server-side persistence hints;
-	// we key our own map by cacheSlot exactly like CACHE_TO_SURFACE does.
+	// cacheKey (8 bytes at offset 2) names this tile across sessions and is
+	// what CACHE_IMPORT_OFFER references at the start of a future session.
+	cacheKey := binary.LittleEndian.Uint64(data[2:])
 	cacheSlot := binary.LittleEndian.Uint16(data[10:])
 	left := int(binary.LittleEndian.Uint16(data[12:]))
 	top := int(binary.LittleEndian.Uint16(data[14:]))
@@ -1886,7 +1894,34 @@ func (g *GfxHandler) onSurfaceToCache(data []byte) {
 		}
 		copy(pixels[dstOff:dstOff+rowBytes], s.data[srcOff:srcOff+rowBytes])
 	}
+	// Heuristic: if the source region is entirely (0,0,0,0xFF) black, the
+	// surface hasn't been painted there yet — saving black would let later
+	// CacheToSurface blits overwrite real content arriving from WTS paints
+	// (servers issue SurfaceToCache speculatively, expecting the client to
+	// already have content from a persistent cache).  Skip both the RAM
+	// store and the disk write so the persistent file (if any) survives.
+	allBlack := true
+	for i := 0; i+4 <= len(pixels); i += 4 {
+		if pixels[i] != 0 || pixels[i+1] != 0 || pixels[i+2] != 0 {
+			allBlack = false
+			break
+		}
+	}
+	if allBlack {
+		return
+	}
 	g.cacheEntries[cacheSlot] = cacheEntry{data: pixels, width: w, height: h}
+	g.slotToKey[cacheSlot] = cacheKey
+	// Disk write rate is low (SurfaceToCache fires a few hundred times per
+	// session, not per frame), so do it inline.  os.WriteFile is atomic at
+	// the directory entry level; we deliberately skip fsync — losing the
+	// final few writes on a crash just means the server re-sends them.
+	if dir, err := ensureGfxCacheDir(); err == nil {
+		if werr := writeGfxCacheEntry(dir, cacheKey, uint16(w), uint16(h), pixels); werr != nil {
+			slog.Debug("RDPGFX: persistent cache write failed",
+				"key", cacheKey, "err", werr)
+		}
+	}
 }
 
 func (g *GfxHandler) onCacheToSurface(data []byte) {
@@ -1916,12 +1951,102 @@ func (g *GfxHandler) onEvictCacheEntry(data []byte) {
 		return
 	}
 	slot := binary.LittleEndian.Uint16(data)
+	if key, ok := g.slotToKey[slot]; ok {
+		if dir, err := gfxCacheDir(); err == nil {
+			deleteGfxCacheEntry(dir, key)
+		}
+		delete(g.slotToKey, slot)
+	}
 	delete(g.cacheEntries, slot)
 }
 
-func (g *GfxHandler) onCacheImportOffer() {
-	var p [2]byte // importedEntriesCount = 0 (little-endian zero)
-	g.sendPdu(cmdidCacheImportReply, p[:])
+// onCacheImportOffer handles RDPGFX_CACHE_IMPORT_OFFER_PDU
+// (MS-RDPEGFX 2.2.2.16).  The server enumerates the cacheKeys it expects
+// the client to already hold from prior sessions; we reply with the
+// subset we actually have on disk so the server can skip re-sending
+// those tiles.
+//
+// Offer payload (per MS-RDPEGFX 2.2.2.16):
+//
+//	cacheEntriesCount  uint16 LE
+//	cacheEntries[]:
+//	  cacheKey         uint64 LE
+//	  bitmapWidth      uint16 LE
+//	  bitmapHeight     uint16 LE
+//
+// Reply payload (RDPGFX_CACHE_IMPORT_REPLY_PDU, 2.2.2.17):
+//
+//	importedEntriesCount uint16 LE
+//	cacheSlots[]:        each uint16 LE
+//
+// The reply lists slots in the same relative order as the matching
+// entries from the offer.  We assign slots greedily starting at 1 and
+// skipping any slot already populated (slot 0 is reserved per spec).
+func (g *GfxHandler) onCacheImportOffer(data []byte) {
+	if len(data) < 2 {
+		var p [2]byte
+		g.sendPdu(cmdidCacheImportReply, p[:])
+		return
+	}
+	count := int(binary.LittleEndian.Uint16(data[0:]))
+	// Each offered entry is 8 + 2 + 2 = 12 bytes.
+	if len(data) < 2+count*12 {
+		var p [2]byte
+		g.sendPdu(cmdidCacheImportReply, p[:])
+		return
+	}
+	dir, derr := gfxCacheDir()
+	// If we cannot resolve a cache dir, decline every offer cleanly.
+	if derr != nil {
+		var p [2]byte
+		g.sendPdu(cmdidCacheImportReply, p[:])
+		return
+	}
+	importedSlots := make([]uint16, 0, count)
+	// nextSlot walks the slot space looking for unused slots.  Slot 0 is
+	// reserved by MS-RDPEGFX, so we start at 1.
+	nextSlot := uint16(1)
+	off := 2
+	for i := 0; i < count; i++ {
+		key := binary.LittleEndian.Uint64(data[off : off+8])
+		w := binary.LittleEndian.Uint16(data[off+8 : off+10])
+		h := binary.LittleEndian.Uint16(data[off+10 : off+12])
+		off += 12
+		pixels, err := readGfxCacheEntry(dir, key, w, h)
+		if err != nil {
+			// File missing or invalid (magic / version / dimension mismatch);
+			// skip — the server will re-send via SurfaceToCache.
+			continue
+		}
+		// Find an unused slot.
+		for {
+			if _, taken := g.cacheEntries[nextSlot]; !taken && nextSlot != 0 {
+				break
+			}
+			nextSlot++
+			if nextSlot == 0 {
+				// Wrapped around the entire uint16 space — give up.
+				break
+			}
+		}
+		if nextSlot == 0 {
+			break
+		}
+		g.cacheEntries[nextSlot] = cacheEntry{
+			data:   pixels,
+			width:  int(w),
+			height: int(h),
+		}
+		g.slotToKey[nextSlot] = key
+		importedSlots = append(importedSlots, nextSlot)
+		nextSlot++
+	}
+	payload := make([]byte, 2+2*len(importedSlots))
+	binary.LittleEndian.PutUint16(payload[0:], uint16(len(importedSlots)))
+	for i, slot := range importedSlots {
+		binary.LittleEndian.PutUint16(payload[2+i*2:], slot)
+	}
+	g.sendPdu(cmdidCacheImportReply, payload)
 }
 
 // --- Helpers ---
