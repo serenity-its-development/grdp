@@ -85,8 +85,8 @@ loop_yco:
 	// PUNPCKLWD: low 4 words → [BG0,RA0,BG1,RA1,BG2,RA2,BG3,RA3]
 	//           = bytes [B0,G0,R0,FF, B1,G1,R1,FF, B2,G2,R2,FF, B3,G3,R3,FF]
 	MOVO      X4, X11
-	PUNPCKLWD X6, X11          // X11 = low  4 BGRA pixels
-	PUNPCKHWD X6, X4           // X4  = high 4 BGRA pixels
+	PUNPCKLWL X6, X11          // X11 = low  4 BGRA pixels (Go asm: PUNPCKLWL == Intel PUNPCKLWD)
+	PUNPCKHWL X6, X4           // X4  = high 4 BGRA pixels (Go asm: PUNPCKHWL == Intel PUNPCKHWD)
 
 	MOVOU X11, (DI)
 	MOVOU X4,  16(DI)
