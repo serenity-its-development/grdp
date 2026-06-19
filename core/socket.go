@@ -77,8 +77,7 @@ func (s *SocketLayer) StartTLS() error {
 		InsecureSkipVerify: true,
 		ServerName:         s.serverName,
 		MinVersion:         tls.VersionTLS12,
-		MaxVersion:         tls.VersionTLS12,
-		//		MaxVersion:               tls.VersionTLS13,
+		MaxVersion:         tls.VersionTLS13, // allow 1.2 OR 1.3 — a domain-hardened box may only complete the handshake at 1.3
 	}
 	tlsConn := tls.Client(s.conn, config)
 	if err := tlsConn.Handshake(); err != nil {
