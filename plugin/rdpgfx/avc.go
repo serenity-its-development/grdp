@@ -219,7 +219,7 @@ func (g *GfxHandler) decodeAVC420(data []byte, destX, destY, destW, destH int) (
 		}
 		rh.SetRegionHint(rects)
 	}
-	frame, err := g.h264dec.Decode(stream.h264Data)
+	frame, err := g.decodeH264(stream.h264Data)
 	if err != nil {
 		slog.Warn("RDPGFX: H.264 decode error", "err", err)
 		return nil, nil, false
@@ -313,10 +313,10 @@ func (g *GfxHandler) decodeAVC444(data []byte, destX, destY, destW, destH int) (
 				}
 			}
 		} else {
-			frame, err = g.h264dec.Decode(stream1.h264Data)
+			frame, err = g.decodeH264(stream1.h264Data)
 		}
 	} else {
-		frame, err = g.h264dec.Decode(stream1.h264Data)
+		frame, err = g.decodeH264(stream1.h264Data)
 	}
 	if err != nil {
 		slog.Warn("RDPGFX: H.264 decode error (AVC444)", "err", err)
@@ -414,7 +414,7 @@ func (g *GfxHandler) decodeAVC420WithI420(data []byte, destX, destY, destW, dest
 			i420 = i420out
 		}
 	} else {
-		frame, err = g.h264dec.Decode(stream.h264Data)
+		frame, err = g.decodeH264(stream.h264Data)
 		if err != nil {
 			slog.Warn("RDPGFX: H.264 decode error", "err", err)
 			return
@@ -474,7 +474,7 @@ func (g *GfxHandler) decodeAVC420WithNV12(data []byte, destX, destY, destW, dest
 			nv12 = nv12out
 		}
 	} else {
-		frame, err = g.h264dec.Decode(stream.h264Data)
+		frame, err = g.decodeH264(stream.h264Data)
 		if err != nil {
 			slog.Warn("RDPGFX: H.264 decode error", "err", err)
 			return
@@ -543,7 +543,7 @@ func (g *GfxHandler) decodeAVC444WithI420(data []byte, destX, destY, destW, dest
 			}
 		}
 	} else {
-		frame, err = g.h264dec.Decode(stream1.h264Data)
+		frame, err = g.decodeH264(stream1.h264Data)
 		if err != nil {
 			slog.Warn("RDPGFX: H.264 decode error (AVC444)", "err", err)
 			return
@@ -1237,6 +1237,14 @@ func (g *GfxHandler) maybeRequestKeyframe() {
 	go g.onKeyframeRequest()
 }
 
+// decodeH264 feeds AVC (H.264) data to the active decoder and records that the stream is actually
+// carrying video (see receivedAVC420). This is how a "no IDR" timeout on a still desktop — painted
+// only by Progressive and cached tiles — is told apart from a real mid-video stall.
+func (g *GfxHandler) decodeH264(data []byte) (*H264Frame, error) {
+	g.receivedAVC420 = true
+	return g.h264dec.Decode(data)
+}
+
 // maybeNotifyDecoderBroken is called whenever the H.264 decoder returns a
 // nil frame.  It first tries up to softResetLimit in-place decoder resets
 // (cheap: just recreate the FFmpeg/VideoToolbox context and ask the server
@@ -1251,6 +1259,22 @@ func (g *GfxHandler) maybeNotifyDecoderBroken() {
 	}
 	reason := g.h264dec.BrokenReason()
 	if reason == H264BrokenReasonNoIDR {
+		if !g.receivedAVC420 {
+			// No AVC420 video has ever arrived — this desktop is being painted by Progressive and
+			// cached tiles, not H.264. A "no IDR" timeout is benign here (there's simply no video
+			// yet), so do NOT reconnect (that tears the session down and wedges the server's
+			// graphics pipeline) and do NOT request a keyframe (that flickers the whole desktop).
+			// Recreate the idle decoder so it's fresh for the first real AVC420 IDR, which the
+			// server sends when motion actually starts.
+			g.h264dec.Close()
+			if g.usingSWFallback {
+				g.h264dec = newH264DecoderSWWithWatchdog(g.watchdogCh)
+			} else {
+				g.h264dec = newH264DecoderWithWatchdog(g.watchdogCh)
+			}
+			g.softResetCount = 0
+			return
+		}
 		// Allow only one no-IDR soft reset before escalating to reconnect.
 		// ForceRefresh (SuppressOutput toggle) often fails to trigger a new
 		// AVC444 IDR from Windows servers; repeatedly retrying just prolongs

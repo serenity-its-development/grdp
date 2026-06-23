@@ -265,6 +265,11 @@ type GfxHandler struct {
 	// flag is true, avoiding repeated VideoToolbox stalls that would
 	// otherwise trigger a full RDP reconnect.
 	usingSWFallback bool
+	// receivedAVC420 is set once any AVC420/AVC444 (H.264) data has actually been fed to the
+	// decoder. It lets maybeNotifyDecoderBroken treat a "no IDR" timeout as benign while the
+	// desktop is painted only by Progressive/cached tiles (no video yet), so an idle decoder
+	// never triggers a session-killing reconnect. Set on the decode goroutine, read there too.
+	receivedAVC420 bool
 	// lc2EverDecoded is set to true after the first successful AVC444 LC=2
 	// chroma-upgrade decode.  maybeRenegotiateCapabilities uses this to
 	// distinguish "LC=2 was working and then broke" (reconnect needed) from
@@ -812,6 +817,7 @@ func (g *GfxHandler) Process(data []byte) {
 	if len(data) < 1 {
 		return
 	}
+	slog.Debug("RDPGFX: Process (gfx data in)", "len", len(data), "descriptor", data[0])
 
 	var decompressed []byte
 	var decompPooled bool
@@ -1049,6 +1055,7 @@ func (g *GfxHandler) decodePDUs(data []byte) {
 // and progressive decode are skipped to drain the queue quickly.
 // EndFrame (frame ACK) is always processed regardless of skipHeavy.
 func (g *GfxHandler) dispatchDecode(cmdId uint16, data []byte, skipHeavy bool) {
+	slog.Debug("RDPGFX: dispatch PDU", "cmdId", cmdId, "len", len(data), "skipHeavy", skipHeavy)
 	switch cmdId {
 	case cmdidCapsConfirm:
 		g.onCapsConfirm(data)
