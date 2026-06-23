@@ -12,13 +12,13 @@ package rdpgfx
 // quantization helpers, and inverse DWT live in:
 //   rfx_progressive_tile.go  — tile state cache + decode dispatch
 //   rfx_quantization.go      — per-band scalar quantization
-//   rfx_dwt.go               — 3-level inverse 2D DWT
+//   rfx_dwt.go               — 3-level inverse 2D DWT (non-extrapolate)
+//   rfx_dwt_extrapolate.go   — 3-level inverse 2D DWT (RFX_DWT_REDUCE_EXTRAPOLATE)
 //
-// We deliberately do NOT support the RFX_DWT_REDUCE_EXTRAPOLATE region flag
-// (extended-band 1023/1023/961 layout): the rest of FreeRDP itself logs a
-// warning when it isn't set, real Windows servers don't enable it, and the
-// extrapolate DWT helpers are a separate full-size port that we can add in a
-// follow-up if/when we see traffic in the wild.
+// Both band layouts are supported: the legacy 1024/256/64 layout and the
+// RFX_DWT_REDUCE_EXTRAPOLATE asymmetric 1023/1023/961…81 layout, selected per
+// region by the RFX_DWT_REDUCE_EXTRAPOLATE flag and threaded through the tile
+// decode path as `extrapolate`.
 
 import (
 	"bytes"
@@ -275,10 +275,11 @@ func (d *rfxProgressiveDecoder) parseRegion(data []byte, surface *progressiveSur
 	_, _ = core.ReadUint16LE(r) // numTiles, FreeRDP only uses for sanity
 	_, _ = core.ReadUInt32LE(r) // tileDataSize, ditto
 
-	if (regionFlags & rfxDwtReduceExtrapolate) != 0 {
-		slog.Debug("RFX progressive: RFX_DWT_REDUCE_EXTRAPOLATE not supported; skipping region")
-		return nil
-	}
+	// RFX_DWT_REDUCE_EXTRAPOLATE selects the asymmetric extrapolate band
+	// layout (1023/1023/961 … 81) and the matching extrapolate inverse DWT.
+	// FreeRDP: progressive.c line 959 (extrapolate = region->flags &
+	// RFX_DWT_REDUCE_EXTRAPOLATE).  We support it for FIRST/SIMPLE tiles.
+	extrapolate := (regionFlags & rfxDwtReduceExtrapolate) != 0
 
 	rects := make([]rfxRect, 0, numRects)
 	for i := 0; i < int(numRects); i++ {
@@ -347,11 +348,11 @@ func (d *rfxProgressiveDecoder) parseRegion(data []byte, surface *progressiveSur
 	decodeOne := func(tw progTileWork, parallelComponents bool) {
 		switch tw.tileType {
 		case progWBTTileSimple:
-			d.decodeTileSimple(tw.payload, quants, surface, surfData, outW, outH, parallelComponents)
+			d.decodeTileSimple(tw.payload, quants, surface, surfData, outW, outH, parallelComponents, extrapolate)
 		case progWBTTileFirst:
-			d.decodeTileFirst(tw.payload, quants, progQuants, surface, surfData, outW, outH, parallelComponents)
+			d.decodeTileFirst(tw.payload, quants, progQuants, surface, surfData, outW, outH, parallelComponents, extrapolate)
 		case progWBTTileUpgrade:
-			d.decodeTileUpgrade(tw.payload, quants, progQuants, surface, surfData, outW, outH, ctxFlags, parallelComponents)
+			d.decodeTileUpgrade(tw.payload, quants, progQuants, surface, surfData, outW, outH, ctxFlags, parallelComponents, extrapolate)
 		}
 	}
 

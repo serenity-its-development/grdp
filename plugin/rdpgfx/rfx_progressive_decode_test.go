@@ -276,25 +276,26 @@ func wrapBlock(blockType uint16, payload []byte) []byte {
 	return append(hdr, payload...)
 }
 
-// TestParseRegionRejectsExtrapolate confirms we skip regions that demand the
-// RFX_DWT_REDUCE_EXTRAPOLATE band layout (we don't support that path).
-func TestParseRegionRejectsExtrapolate(t *testing.T) {
+// TestParseRegionAcceptsExtrapolate confirms we now process regions that carry
+// the RFX_DWT_REDUCE_EXTRAPOLATE band-layout flag (previously skipped).  With
+// no rects/tiles the region parses cleanly and yields zero rects (not a skip).
+func TestParseRegionAcceptsExtrapolate(t *testing.T) {
 	d := newRfxProgressiveDecoder()
 	surf := make([]byte, 64*64*4)
 	s := d.getSurface(surf, 64, 64)
 
 	// 12-byte region header with flags bit 0 (extrapolate) set, no rects/quants.
 	region := []byte{
-		64,                  // tileSize
-		0, 0,                // numRects
-		0,                   // numQuant
-		0,                   // numProgQuant
+		64,                      // tileSize
+		0, 0,                    // numRects
+		0,                       // numQuant
+		0,                       // numProgQuant
 		rfxDwtReduceExtrapolate, // flags
-		0, 0,                // numTiles
-		0, 0, 0, 0,          // tileDataSize
+		0, 0,                    // numTiles
+		0, 0, 0, 0,              // tileDataSize
 	}
 	rects := d.parseRegion(region, s, surf, 64, 64, 0)
-	if rects != nil {
-		t.Errorf("expected nil rects when extrapolate is required, got %d", len(rects))
+	if len(rects) != 0 {
+		t.Errorf("expected 0 rects for an empty extrapolate region, got %d", len(rects))
 	}
 }

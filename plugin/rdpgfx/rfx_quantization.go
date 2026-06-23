@@ -77,6 +77,27 @@ func rfxDequantizeSkipLL3(coeffs []int16, shift rfxQuant) {
 	rfxShiftSubband(coeffs[3968:4032], shift.HH3)
 }
 
+// rfxDequantizeExtrapolateSkipLL3 dequantises every band except LL3 using the
+// RFX_DWT_REDUCE_EXTRAPOLATE band layout (asymmetric band sizes).  Like
+// rfxDequantizeSkipLL3 it applies the shift quant directly (the −1 is already
+// baked into the progressive shift quant).  FreeRDP: progressive.c
+// lines 903-919.  Band offsets/sizes:
+//
+//	HL1 0..1023, LH1 1023..2046, HH1 2046..3007,
+//	HL2 3007..3279, LH2 3279..3551, HH2 3551..3807,
+//	HL3 3807..3879, LH3 3879..3951, HH3 3951..4015.
+func rfxDequantizeExtrapolateSkipLL3(coeffs []int16, shift rfxQuant) {
+	rfxShiftSubband(coeffs[0:1023], shift.HL1)
+	rfxShiftSubband(coeffs[1023:2046], shift.LH1)
+	rfxShiftSubband(coeffs[2046:3007], shift.HH1)
+	rfxShiftSubband(coeffs[3007:3279], shift.HL2)
+	rfxShiftSubband(coeffs[3279:3551], shift.LH2)
+	rfxShiftSubband(coeffs[3551:3807], shift.HH2)
+	rfxShiftSubband(coeffs[3807:3879], shift.HL3)
+	rfxShiftSubband(coeffs[3879:3951], shift.LH3)
+	rfxShiftSubband(coeffs[3951:4015], shift.HH3)
+}
+
 // rfxDequantizeSkipLL3FromWire is the non-progressive variant that takes the
 // raw wire quant and applies (q.X − 1) per band.  Used by rfx.go's tile
 // pipeline.  FreeRDP: rfx_quantization.c lines 73-81.

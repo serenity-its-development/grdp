@@ -31,7 +31,7 @@ import (
 // FreeRDP: progressive.c progressive_tile_read (simple=TRUE) at line 1593, and
 // progressive_decompress_tile_first (which handles both FIRST and SIMPLE) at
 // line 929.
-func (d *rfxProgressiveDecoder) decodeTileSimple(data []byte, quants []rfxQuant, surface *progressiveSurface, output []byte, outW, outH int, parallelComponents bool) {
+func (d *rfxProgressiveDecoder) decodeTileSimple(data []byte, quants []rfxQuant, surface *progressiveSurface, output []byte, outW, outH int, parallelComponents bool, extrapolate bool) {
 	if len(data) < 16 {
 		return
 	}
@@ -55,7 +55,7 @@ func (d *rfxProgressiveDecoder) decodeTileSimple(data []byte, quants []rfxQuant,
 
 	d.decodeFirstPass(surface, int(xIdx), int(yIdx), flags, 0xFF,
 		quants, nil, quantIdxY, quantIdxCb, quantIdxCr,
-		yData, cbData, crData, output, outW, outH, parallelComponents)
+		yData, cbData, crData, output, outW, outH, parallelComponents, extrapolate)
 }
 
 // decodeTileFirst handles PROGRESSIVE_WBT_TILE_FIRST (0xCCC6).  Wire format
@@ -67,7 +67,7 @@ func (d *rfxProgressiveDecoder) decodeTileSimple(data []byte, quants []rfxQuant,
 //	yData(yLen) cbData(cbLen) crData(crLen) tailData(tailLen)
 //
 // FreeRDP: progressive.c progressive_tile_read (simple=FALSE) at line 1593.
-func (d *rfxProgressiveDecoder) decodeTileFirst(data []byte, quants []rfxQuant, progQuants []rfxProgQuant, surface *progressiveSurface, output []byte, outW, outH int, parallelComponents bool) {
+func (d *rfxProgressiveDecoder) decodeTileFirst(data []byte, quants []rfxQuant, progQuants []rfxProgQuant, surface *progressiveSurface, output []byte, outW, outH int, parallelComponents bool, extrapolate bool) {
 	if len(data) < 17 {
 		return
 	}
@@ -92,7 +92,7 @@ func (d *rfxProgressiveDecoder) decodeTileFirst(data []byte, quants []rfxQuant, 
 
 	d.decodeFirstPass(surface, int(xIdx), int(yIdx), flags, quality,
 		quants, progQuants, quantIdxY, quantIdxCb, quantIdxCr,
-		yData, cbData, crData, output, outW, outH, parallelComponents)
+		yData, cbData, crData, output, outW, outH, parallelComponents, extrapolate)
 }
 
 // decodeFirstPass is the shared FIRST/SIMPLE backend (FreeRDP merges them via
@@ -109,7 +109,7 @@ func (d *rfxProgressiveDecoder) decodeFirstPass(surface *progressiveSurface,
 	quants []rfxQuant, progQuants []rfxProgQuant,
 	quantIdxY, quantIdxCb, quantIdxCr int,
 	yData, cbData, crData []byte, output []byte, outW, outH int,
-	parallelComponents bool,
+	parallelComponents bool, extrapolate bool,
 ) {
 	tile := surface.getTile(xIdx, yIdx)
 	if tile == nil {
@@ -150,14 +150,14 @@ func (d *rfxProgressiveDecoder) decodeFirstPass(surface *progressiveSurface,
 	var yCoeffs, cbCoeffs, crCoeffs []int16
 	if parallelComponents {
 		var wg sync.WaitGroup
-		wg.Go(func() { yCoeffs = decodeComponentFirst(yData, shiftY, tile, 0, coeffDiff) })
-		wg.Go(func() { cbCoeffs = decodeComponentFirst(cbData, shiftCb, tile, 1, coeffDiff) })
-		wg.Go(func() { crCoeffs = decodeComponentFirst(crData, shiftCr, tile, 2, coeffDiff) })
+		wg.Go(func() { yCoeffs = decodeComponentFirst(yData, shiftY, tile, 0, coeffDiff, extrapolate) })
+		wg.Go(func() { cbCoeffs = decodeComponentFirst(cbData, shiftCb, tile, 1, coeffDiff, extrapolate) })
+		wg.Go(func() { crCoeffs = decodeComponentFirst(crData, shiftCr, tile, 2, coeffDiff, extrapolate) })
 		wg.Wait()
 	} else {
-		yCoeffs = decodeComponentFirst(yData, shiftY, tile, 0, coeffDiff)
-		cbCoeffs = decodeComponentFirst(cbData, shiftCb, tile, 1, coeffDiff)
-		crCoeffs = decodeComponentFirst(crData, shiftCr, tile, 2, coeffDiff)
+		yCoeffs = decodeComponentFirst(yData, shiftY, tile, 0, coeffDiff, extrapolate)
+		cbCoeffs = decodeComponentFirst(cbData, shiftCb, tile, 1, coeffDiff, extrapolate)
+		crCoeffs = decodeComponentFirst(crData, shiftCr, tile, 2, coeffDiff, extrapolate)
 	}
 
 	// Record cumulative bit-position for future UPGRADE passes.  FreeRDP:
@@ -188,7 +188,7 @@ func (d *rfxProgressiveDecoder) decodeFirstPass(surface *progressiveSurface,
 //
 // FreeRDP: progressive.c progressive_tile_read_upgrade at line 1515 and
 // progressive_decompress_tile_upgrade at line 1331.
-func (d *rfxProgressiveDecoder) decodeTileUpgrade(data []byte, quants []rfxQuant, progQuants []rfxProgQuant, surface *progressiveSurface, output []byte, outW, outH int, ctxFlags uint8, parallelComponents bool) {
+func (d *rfxProgressiveDecoder) decodeTileUpgrade(data []byte, quants []rfxQuant, progQuants []rfxProgQuant, surface *progressiveSurface, output []byte, outW, outH int, ctxFlags uint8, parallelComponents bool, extrapolate bool) {
 	if len(data) < 20 {
 		return
 	}
@@ -263,14 +263,14 @@ func (d *rfxProgressiveDecoder) decodeTileUpgrade(data []byte, quants []rfxQuant
 	var yOut, cbOut, crOut []int16
 	if parallelComponents {
 		var wg sync.WaitGroup
-		wg.Go(func() { yOut = decodeComponentUpgrade(tile, 0, shiftY, yNumBits, ySrl, yRaw) })
-		wg.Go(func() { cbOut = decodeComponentUpgrade(tile, 1, shiftCb, cbNumBits, cbSrl, cbRaw) })
-		wg.Go(func() { crOut = decodeComponentUpgrade(tile, 2, shiftCr, crNumBits, crSrl, crRaw) })
+		wg.Go(func() { yOut = decodeComponentUpgrade(tile, 0, shiftY, yNumBits, ySrl, yRaw, extrapolate) })
+		wg.Go(func() { cbOut = decodeComponentUpgrade(tile, 1, shiftCb, cbNumBits, cbSrl, cbRaw, extrapolate) })
+		wg.Go(func() { crOut = decodeComponentUpgrade(tile, 2, shiftCr, crNumBits, crSrl, crRaw, extrapolate) })
 		wg.Wait()
 	} else {
-		yOut = decodeComponentUpgrade(tile, 0, shiftY, yNumBits, ySrl, yRaw)
-		cbOut = decodeComponentUpgrade(tile, 1, shiftCb, cbNumBits, cbSrl, cbRaw)
-		crOut = decodeComponentUpgrade(tile, 2, shiftCr, crNumBits, crSrl, crRaw)
+		yOut = decodeComponentUpgrade(tile, 0, shiftY, yNumBits, ySrl, yRaw, extrapolate)
+		cbOut = decodeComponentUpgrade(tile, 1, shiftCb, cbNumBits, cbSrl, cbRaw, extrapolate)
+		crOut = decodeComponentUpgrade(tile, 2, shiftCr, crNumBits, crSrl, crRaw, extrapolate)
 	}
 
 	tile.yQuant = qY
@@ -300,7 +300,7 @@ func (d *rfxProgressiveDecoder) decodeTileUpgrade(data []byte, quants []rfxQuant
 // progressive.c lines 824-830).  In that case the sign buffer is kept as-is
 // (the sign tracking is only meaningful for the very first FIRST pass on a
 // given tile).
-func decodeComponentFirst(data []byte, shift rfxQuant, tile *progressiveTile, comp int, coeffDiff bool) []int16 {
+func decodeComponentFirst(data []byte, shift rfxQuant, tile *progressiveTile, comp int, coeffDiff, extrapolate bool) []int16 {
 	arr := coeffPool.Get().(*coeffArr)
 	coeffs := arr[:]
 
@@ -313,7 +313,11 @@ func decodeComponentFirst(data []byte, shift rfxQuant, tile *progressiveTile, co
 		// Inverse DWT of zeros is zeros — skip when there's nothing to refine.
 		if coeffDiff {
 			copy(coeffs, tile.current[comp][:])
-			rfxInverseDWT2D(coeffs)
+			if extrapolate {
+				rfxInverseDWT2DExtrapolate(coeffs)
+			} else {
+				rfxInverseDWT2D(coeffs)
+			}
 		}
 		return coeffs
 	}
@@ -328,25 +332,46 @@ func decodeComponentFirst(data []byte, shift rfxQuant, tile *progressiveTile, co
 	// any shift/differential transform).
 	copy(tile.sign[comp][:], coeffs)
 
-	// 3. Differential decode LL3 (cumulative sum across the 64 LL3 coeffs)
-	// fused with the LL3 quant shift via cumsum(x)*2^s == cumsum(x*2^s).
-	// FreeRDP: progressive.c line 879 (rfx_differential_decode + later
-	// rfx_quantization_decode applies shift->LL3).
-	if shift.LL3 > 0 {
-		s := uint(shift.LL3)
-		coeffs[4032] = int16(int32(coeffs[4032]) << s)
-		for i := 4033; i < 4096; i++ {
-			coeffs[i] = coeffs[i-1] + int16(int32(coeffs[i])<<s)
+	if extrapolate {
+		// Extrapolate band layout: dequantize the high bands first, then
+		// differential-decode + shift the LL3 band (81 coeffs @ 4015).
+		// FreeRDP: progressive.c lines 901-923.
+		rfxDequantizeExtrapolateSkipLL3(coeffs, shift)
+		// rfx_differential_decode(&buffer[4015], 81) fused with the LL3 shift
+		// via cumsum(x)*2^s == cumsum(x*2^s).  FreeRDP: progressive.c
+		// lines 921-922.
+		if shift.LL3 > 0 {
+			s := uint(shift.LL3)
+			coeffs[4015] = int16(int32(coeffs[4015]) << s)
+			for i := 4016; i < 4096; i++ {
+				coeffs[i] = coeffs[i-1] + int16(int32(coeffs[i])<<s)
+			}
+		} else {
+			for i := 4016; i < 4096; i++ {
+				coeffs[i] += coeffs[i-1]
+			}
 		}
 	} else {
-		for i := 4033; i < 4096; i++ {
-			coeffs[i] += coeffs[i-1]
+		// 3. Differential decode LL3 (cumulative sum across the 64 LL3 coeffs)
+		// fused with the LL3 quant shift via cumsum(x)*2^s == cumsum(x*2^s).
+		// FreeRDP: progressive.c line 879 (rfx_differential_decode + later
+		// rfx_quantization_decode applies shift->LL3).
+		if shift.LL3 > 0 {
+			s := uint(shift.LL3)
+			coeffs[4032] = int16(int32(coeffs[4032]) << s)
+			for i := 4033; i < 4096; i++ {
+				coeffs[i] = coeffs[i-1] + int16(int32(coeffs[i])<<s)
+			}
+		} else {
+			for i := 4033; i < 4096; i++ {
+				coeffs[i] += coeffs[i-1]
+			}
 		}
-	}
 
-	// 4. Apply per-band quant shift to every band except LL3 (handled above).
-	// FreeRDP: progressive.c lines 880-898.
-	rfxDequantizeSkipLL3(coeffs, shift)
+		// 4. Apply per-band quant shift to every band except LL3 (handled above).
+		// FreeRDP: progressive.c lines 880-898.
+		rfxDequantizeSkipLL3(coeffs, shift)
+	}
 
 	// 5. Capture post-shift coefficients for UPGRADE refinement.  FreeRDP:
 	// dwt_2d_decode calls memcpy(current, buffer, ...) when coeffDiff=FALSE
@@ -364,7 +389,11 @@ func decodeComponentFirst(data []byte, shift rfxQuant, tile *progressiveTile, co
 	}
 
 	// 6. Inverse 3-level 2D DWT in-place.  FreeRDP: progressive.c line 925.
-	rfxInverseDWT2D(coeffs)
+	if extrapolate {
+		rfxInverseDWT2DExtrapolate(coeffs)
+	} else {
+		rfxInverseDWT2D(coeffs)
+	}
 	return coeffs
 }
 
@@ -380,16 +409,16 @@ func decodeComponentFirst(data []byte, shift rfxQuant, tile *progressiveTile, co
 // the prior pass; rawData is the RAW bitstream used everywhere else.  After
 // refinement, current[comp] is copied into the working buffer and IDWT runs.
 //
-// Note: this function expects the *non-extrapolate* band layout (same as the
-// FIRST pass): HL1@0..1024, LH1@1024..2048, HH1@2048..3072, etc.  FreeRDP's
-// upgrade_component uses the extrapolate layout (1023/961/272/72/...) because
-// progressive *always* sends UPGRADE with RFX_DWT_REDUCE_EXTRAPOLATE in
-// modern captures.  We reject extrapolate at the region level and rely on
-// the legacy 1024/256/64 layout for both passes.  Real Windows servers using
-// progressive without extrapolate still send UPGRADE blocks; this is the
-// path we exercise.  FreeRDP: progressive.c progressive_rfx_upgrade_component
-// at line 1258.
-func decodeComponentUpgrade(tile *progressiveTile, comp int, shift rfxQuant, numBits rfxQuant, srlData, rawData []byte) []int16 {
+// Two band layouts are supported, selected by `extrapolate`:
+//
+//	non-extrapolate: HL1@0..1024, LH1@1024..2048, HH1@2048..3072, … LL3@4032..4096
+//	extrapolate:     HL1@0..1023, LH1@1023..2046, HH1@2046..3007, … LL3@4015..4096
+//
+// FreeRDP: progressive.c progressive_rfx_upgrade_component at line 1258 (the
+// extrapolate branch is the offsets used unconditionally there because modern
+// progressive always sends UPGRADE with RFX_DWT_REDUCE_EXTRAPOLATE).  When the
+// region flag is clear we use the legacy 1024/256/64 layout for both passes.
+func decodeComponentUpgrade(tile *progressiveTile, comp int, shift rfxQuant, numBits rfxQuant, srlData, rawData []byte, extrapolate bool) []int16 {
 	arr := coeffPool.Get().(*coeffArr)
 	out := arr[:]
 
@@ -401,25 +430,45 @@ func decodeComponentUpgrade(tile *progressiveTile, comp int, shift rfxQuant, num
 	// Non-LL bands (sign-tracked, may pull from SRL stream).  FreeRDP:
 	// progressive.c lines 1282-1316.
 	state.nonLL = true
-	state.refineBlock(current[0:1024], sign[0:1024], shift.HL1, numBits.HL1)
-	state.refineBlock(current[1024:2048], sign[1024:2048], shift.LH1, numBits.LH1)
-	state.refineBlock(current[2048:3072], sign[2048:3072], shift.HH1, numBits.HH1)
-	state.refineBlock(current[3072:3328], sign[3072:3328], shift.HL2, numBits.HL2)
-	state.refineBlock(current[3328:3584], sign[3328:3584], shift.LH2, numBits.LH2)
-	state.refineBlock(current[3584:3840], sign[3584:3840], shift.HH2, numBits.HH2)
-	state.refineBlock(current[3840:3904], sign[3840:3904], shift.HL3, numBits.HL3)
-	state.refineBlock(current[3904:3968], sign[3904:3968], shift.LH3, numBits.LH3)
-	state.refineBlock(current[3968:4032], sign[3968:4032], shift.HH3, numBits.HH3)
+	if extrapolate {
+		state.refineBlock(current[0:1023], sign[0:1023], shift.HL1, numBits.HL1)
+		state.refineBlock(current[1023:2046], sign[1023:2046], shift.LH1, numBits.LH1)
+		state.refineBlock(current[2046:3007], sign[2046:3007], shift.HH1, numBits.HH1)
+		state.refineBlock(current[3007:3279], sign[3007:3279], shift.HL2, numBits.HL2)
+		state.refineBlock(current[3279:3551], sign[3279:3551], shift.LH2, numBits.LH2)
+		state.refineBlock(current[3551:3807], sign[3551:3807], shift.HH2, numBits.HH2)
+		state.refineBlock(current[3807:3879], sign[3807:3879], shift.HL3, numBits.HL3)
+		state.refineBlock(current[3879:3951], sign[3879:3951], shift.LH3, numBits.LH3)
+		state.refineBlock(current[3951:4015], sign[3951:4015], shift.HH3, numBits.HH3)
 
-	// LL3 band — RAW only, no sign tracking.  FreeRDP: progressive.c line 1320.
-	state.nonLL = false
-	state.refineBlock(current[4032:4096], sign[4032:4096], shift.LL3, numBits.LL3)
+		// LL3 band — RAW only, no sign tracking.  FreeRDP: progressive.c line 1320.
+		state.nonLL = false
+		state.refineBlock(current[4015:4096], sign[4015:4096], shift.LL3, numBits.LL3)
+	} else {
+		state.refineBlock(current[0:1024], sign[0:1024], shift.HL1, numBits.HL1)
+		state.refineBlock(current[1024:2048], sign[1024:2048], shift.LH1, numBits.LH1)
+		state.refineBlock(current[2048:3072], sign[2048:3072], shift.HH1, numBits.HH1)
+		state.refineBlock(current[3072:3328], sign[3072:3328], shift.HL2, numBits.HL2)
+		state.refineBlock(current[3328:3584], sign[3328:3584], shift.LH2, numBits.LH2)
+		state.refineBlock(current[3584:3840], sign[3584:3840], shift.HH2, numBits.HH2)
+		state.refineBlock(current[3840:3904], sign[3840:3904], shift.HL3, numBits.HL3)
+		state.refineBlock(current[3904:3968], sign[3904:3968], shift.LH3, numBits.LH3)
+		state.refineBlock(current[3968:4032], sign[3968:4032], shift.HH3, numBits.HH3)
+
+		// LL3 band — RAW only, no sign tracking.  FreeRDP: progressive.c line 1320.
+		state.nonLL = false
+		state.refineBlock(current[4032:4096], sign[4032:4096], shift.LL3, numBits.LL3)
+	}
 
 	// Copy refined current[c] into the working buffer and run IDWT.
 	// FreeRDP: progressive.c line 1327 dwt_2d_decode(buffer, current,
 	// coeffDiff, extrapolate, reverse=TRUE) → memcpy(buffer, current, ...).
 	copy(out, current)
-	rfxInverseDWT2D(out)
+	if extrapolate {
+		rfxInverseDWT2DExtrapolate(out)
+	} else {
+		rfxInverseDWT2D(out)
+	}
 	return out
 }
 
