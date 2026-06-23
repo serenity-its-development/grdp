@@ -342,7 +342,7 @@ func NewGfxHandler(onBitmap func([]BitmapUpdate)) *GfxHandler {
 		// h264dec2 starts nil; primeAuxDecoder creates it on the first stream2 IDR
 		// so it is always primed before decoding LC=2 P-frames.
 		onBitmap:   onBitmap,
-		decodeCh:   make(chan decodePkt, 1024),
+		decodeCh:   make(chan decodePkt, 64),
 		ackCh:      make(chan []byte, 512),
 		doneCh:     make(chan struct{}),
 		watchdogCh: make(chan struct{}, 4),
@@ -1300,6 +1300,12 @@ func (g *GfxHandler) sendFrameAck(frameId uint32, queueDepth uint32) {
 	}
 }
 
+// interactiveDepthCap bounds the decode backlog — and therefore input→display latency — during
+// continuous motion. Past this many queued frames, onEndFrame asks the server to suspend new
+// frames until we drain. Without it the server races ahead and buffers seconds of video, which
+// feels like seconds of lag when rotating a 3D model (smooth, but way behind the mouse).
+const interactiveDepthCap = 6
+
 func (g *GfxHandler) onEndFrame(data []byte) {
 	if len(data) < 4 {
 		return
@@ -1307,6 +1313,12 @@ func (g *GfxHandler) onEndFrame(data []byte) {
 	realDepth := uint32(len(g.decodeCh))
 	if hint := g.queueDepthHint.Load(); hint > realDepth {
 		realDepth = hint
+	}
+	// Flow control: if we're more than a few frames behind, tell the server to stop sending until
+	// we catch up (MS-RDPEGFX 2.2.2.8 suspend). It auto-resumes once a later ACK reports a lower
+	// depth. This caps interactive latency at ~interactiveDepthCap frames instead of seconds.
+	if len(g.decodeCh) > interactiveDepthCap {
+		realDepth = suspendFrameAcknowledge
 	}
 	g.sendFrameAck(binary.LittleEndian.Uint32(data), realDepth)
 }
