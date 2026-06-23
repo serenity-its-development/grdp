@@ -337,18 +337,18 @@ func decodeComponentFirst(data []byte, shift rfxQuant, tile *progressiveTile, co
 		// differential-decode + shift the LL3 band (81 coeffs @ 4015).
 		// FreeRDP: progressive.c lines 901-923.
 		rfxDequantizeExtrapolateSkipLL3(coeffs, shift)
-		// rfx_differential_decode(&buffer[4015], 81) fused with the LL3 shift
-		// via cumsum(x)*2^s == cumsum(x*2^s).  FreeRDP: progressive.c
-		// lines 921-922.
+		// FreeRDP does this as TWO separate int16 passes (progressive.c 921-922): first
+		// rfx_differential_decode (cumulative sum), THEN the LL3 quant shift. We must NOT fuse them
+		// as cumsum(x<<s): the fused form wraps the int16 intermediate in a different order, and
+		// when an LL3 coefficient overflows int16 after the shift the two diverge — corrupting the
+		// base that UPGRADE tiles later refine (FIRST renders fine, UPGRADE turns to stripe garbage).
+		for i := 4016; i < 4096; i++ {
+			coeffs[i] += coeffs[i-1]
+		}
 		if shift.LL3 > 0 {
 			s := uint(shift.LL3)
-			coeffs[4015] = int16(int32(coeffs[4015]) << s)
-			for i := 4016; i < 4096; i++ {
-				coeffs[i] = coeffs[i-1] + int16(int32(coeffs[i])<<s)
-			}
-		} else {
-			for i := 4016; i < 4096; i++ {
-				coeffs[i] += coeffs[i-1]
+			for i := 4015; i < 4096; i++ {
+				coeffs[i] = int16(int32(coeffs[i]) << s)
 			}
 		}
 	} else {
@@ -409,15 +409,21 @@ func decodeComponentFirst(data []byte, shift rfxQuant, tile *progressiveTile, co
 // the prior pass; rawData is the RAW bitstream used everywhere else.  After
 // refinement, current[comp] is copied into the working buffer and IDWT runs.
 //
-// Two band layouts are supported, selected by `extrapolate`:
-//
-//	non-extrapolate: HL1@0..1024, LH1@1024..2048, HH1@2048..3072, … LL3@4032..4096
-//	extrapolate:     HL1@0..1023, LH1@1023..2046, HH1@2046..3007, … LL3@4015..4096
-//
-// FreeRDP: progressive.c progressive_rfx_upgrade_component at line 1258 (the
-// extrapolate branch is the offsets used unconditionally there because modern
-// progressive always sends UPGRADE with RFX_DWT_REDUCE_EXTRAPOLATE).  When the
-// region flag is clear we use the legacy 1024/256/64 layout for both passes.
+// IMPORTANT: the per-sub-band OFFSETS/LENGTHS the refinement walks over are the
+// RFX_DWT_REDUCE_EXTRAPOLATE layout (HL1@0/1023, LH1@1023/1023, HH1@2046/961,
+// HL2@3007/272, LH2@3279/272, HH2@3551/256, HL3@3807/72, LH3@3879/72,
+// HH3@3951/64, LL3@4015/81) UNCONDITIONALLY — i.e. for both extrapolate and
+// non-extrapolate regions.  FreeRDP's progressive_rfx_upgrade_component
+// (progressive.c line 1258) hard-codes these offsets/lengths with no
+// extrapolate branch; the `extrapolate` flag there only selects the inverse
+// DWT variant at the tail (progressive.c line 1327).  This differs from the
+// FIRST pass (progressive_rfx_decode_component, line 877), which DOES branch
+// its band layout on `extrapolate`.  Refining with the legacy 1024/256/64
+// layout when the region's UPGRADE blocks use the extrapolate sub-band sizes
+// desynchronises the shared SRL/RAW bitstream across sub-bands, which renders
+// as horizontal-stripe garbage and ghosted/doubled content — exactly the
+// observed UPGRADE corruption.  The `extrapolate` flag is therefore consumed
+// only for the IDWT selection below.
 func decodeComponentUpgrade(tile *progressiveTile, comp int, shift rfxQuant, numBits rfxQuant, srlData, rawData []byte, extrapolate bool) []int16 {
 	arr := coeffPool.Get().(*coeffArr)
 	out := arr[:]
@@ -427,42 +433,28 @@ func decodeComponentUpgrade(tile *progressiveTile, comp int, shift rfxQuant, num
 	current := tile.current[comp][:]
 	sign := tile.sign[comp][:]
 
-	// Non-LL bands (sign-tracked, may pull from SRL stream).  FreeRDP:
-	// progressive.c lines 1282-1316.
+	// Non-LL bands (sign-tracked, may pull from SRL stream) — always the
+	// extrapolate sub-band sizes, matching FreeRDP progressive.c lines
+	// 1282-1316.
 	state.nonLL = true
-	if extrapolate {
-		state.refineBlock(current[0:1023], sign[0:1023], shift.HL1, numBits.HL1)
-		state.refineBlock(current[1023:2046], sign[1023:2046], shift.LH1, numBits.LH1)
-		state.refineBlock(current[2046:3007], sign[2046:3007], shift.HH1, numBits.HH1)
-		state.refineBlock(current[3007:3279], sign[3007:3279], shift.HL2, numBits.HL2)
-		state.refineBlock(current[3279:3551], sign[3279:3551], shift.LH2, numBits.LH2)
-		state.refineBlock(current[3551:3807], sign[3551:3807], shift.HH2, numBits.HH2)
-		state.refineBlock(current[3807:3879], sign[3807:3879], shift.HL3, numBits.HL3)
-		state.refineBlock(current[3879:3951], sign[3879:3951], shift.LH3, numBits.LH3)
-		state.refineBlock(current[3951:4015], sign[3951:4015], shift.HH3, numBits.HH3)
+	state.refineBlock(current[0:1023], sign[0:1023], shift.HL1, numBits.HL1)
+	state.refineBlock(current[1023:2046], sign[1023:2046], shift.LH1, numBits.LH1)
+	state.refineBlock(current[2046:3007], sign[2046:3007], shift.HH1, numBits.HH1)
+	state.refineBlock(current[3007:3279], sign[3007:3279], shift.HL2, numBits.HL2)
+	state.refineBlock(current[3279:3551], sign[3279:3551], shift.LH2, numBits.LH2)
+	state.refineBlock(current[3551:3807], sign[3551:3807], shift.HH2, numBits.HH2)
+	state.refineBlock(current[3807:3879], sign[3807:3879], shift.HL3, numBits.HL3)
+	state.refineBlock(current[3879:3951], sign[3879:3951], shift.LH3, numBits.LH3)
+	state.refineBlock(current[3951:4015], sign[3951:4015], shift.HH3, numBits.HH3)
 
-		// LL3 band — RAW only, no sign tracking.  FreeRDP: progressive.c line 1320.
-		state.nonLL = false
-		state.refineBlock(current[4015:4096], sign[4015:4096], shift.LL3, numBits.LL3)
-	} else {
-		state.refineBlock(current[0:1024], sign[0:1024], shift.HL1, numBits.HL1)
-		state.refineBlock(current[1024:2048], sign[1024:2048], shift.LH1, numBits.LH1)
-		state.refineBlock(current[2048:3072], sign[2048:3072], shift.HH1, numBits.HH1)
-		state.refineBlock(current[3072:3328], sign[3072:3328], shift.HL2, numBits.HL2)
-		state.refineBlock(current[3328:3584], sign[3328:3584], shift.LH2, numBits.LH2)
-		state.refineBlock(current[3584:3840], sign[3584:3840], shift.HH2, numBits.HH2)
-		state.refineBlock(current[3840:3904], sign[3840:3904], shift.HL3, numBits.HL3)
-		state.refineBlock(current[3904:3968], sign[3904:3968], shift.LH3, numBits.LH3)
-		state.refineBlock(current[3968:4032], sign[3968:4032], shift.HH3, numBits.HH3)
-
-		// LL3 band — RAW only, no sign tracking.  FreeRDP: progressive.c line 1320.
-		state.nonLL = false
-		state.refineBlock(current[4032:4096], sign[4032:4096], shift.LL3, numBits.LL3)
-	}
+	// LL3 band — RAW only, no sign tracking.  FreeRDP: progressive.c line 1320.
+	state.nonLL = false
+	state.refineBlock(current[4015:4096], sign[4015:4096], shift.LL3, numBits.LL3)
 
 	// Copy refined current[c] into the working buffer and run IDWT.
 	// FreeRDP: progressive.c line 1327 dwt_2d_decode(buffer, current,
 	// coeffDiff, extrapolate, reverse=TRUE) → memcpy(buffer, current, ...).
+	// Only the IDWT variant is gated on the extrapolate flag.
 	copy(out, current)
 	if extrapolate {
 		rfxInverseDWT2DExtrapolate(out)

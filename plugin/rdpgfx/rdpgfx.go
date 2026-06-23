@@ -1321,6 +1321,12 @@ func (g *GfxHandler) onEndFrame(data []byte) {
 		realDepth = suspendFrameAcknowledge
 	}
 	g.sendFrameAck(binary.LittleEndian.Uint32(data), realDepth)
+	// Frame boundary: signal the embedder with an empty update list so it can present a COMPLETE
+	// frame now that all of this frame's tiles are blitted. Without it the client repaints per
+	// tile and shows half-drawn frames (tearing) once the frame rate is high.
+	if g.onBitmap != nil {
+		g.onBitmap(nil)
+	}
 }
 
 // SetQueueDepthHint sets a minimum queueDepth to report in FRAME_ACKNOWLEDGE
