@@ -1153,6 +1153,7 @@ func decodeSurfaceBitsCmd(r io.Reader) (*BitmapData, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read bitmap data: %v", err)
 	}
+	noteSurfaceBits(codecID, bitmapData, int(width), int(height)) // codingstats.go (measurement only)
 
 	slog.Debug("decodeSurfaceBitsCmd",
 		"destLeft", destLeft, "destTop", destTop, "destRight", destRight, "destBottom", destBottom,

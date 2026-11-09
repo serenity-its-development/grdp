@@ -483,6 +483,22 @@ func (c *Client) SetAlternateShell(shell string) {
 	c.info.Flag |= INFO_RAIL
 }
 
+// SetInitialProgram fills the Client Info PDU's AlternateShell/WorkingDir WITHOUT the RAIL
+// flag: the server then runs `program` in place of the desktop shell for this logon (a
+// single-app session that logs off when the program exits). Empty program = normal desktop.
+func (c *Client) SetInitialProgram(program, dir string) {
+	enc := func(s string) []byte {
+		buff := &bytes.Buffer{}
+		for _, ch := range utf16.Encode([]rune(s)) {
+			core.WriteUInt16LE(ch, buff)
+		}
+		core.WriteUInt16LE(0, buff)
+		return buff.Bytes()
+	}
+	c.info.AlternateShell = enc(program)
+	c.info.WorkingDir = enc(dir)
+}
+
 func (c *Client) SetUser(user string) {
 	buff := &bytes.Buffer{}
 	for _, ch := range utf16.Encode([]rune(user)) {

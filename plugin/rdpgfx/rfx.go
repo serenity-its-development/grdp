@@ -175,6 +175,7 @@ func (d *rfxDecoder) decodeTileset(data []byte, left, top int, surfData []byte, 
 		quants[i] = parseRfxQuant(data[off:])
 		off += 5
 	}
+	noteRFXTileset(numTiles, quants) // codingstats.go (measurement only)
 
 	// Collect tile content slices for parallel decoding.
 	type tileWork struct {

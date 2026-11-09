@@ -651,8 +651,12 @@ func buildRemoteFxProperties() []byte {
 	return b.Bytes()
 }
 
-// newClientBitmapCodecsCapability returns a BitmapCodecsCapability with
-// NSCodec (ID=1) and RemoteFX (ID=3) entries, matching what FreeRDP advertises.
+// newClientBitmapCodecsCapability returns a BitmapCodecsCapability with NSCodec (ID=1) only, and
+// lossless: no dynamic fidelity, no chroma subsampling, colour loss level 1 (MS-RDPNSC 2.2.1, 1 =
+// the colour planes are not reduced). It used to allow what FreeRDP does ({1, 1, 3}) and RemoteFX,
+// and Windows took all of it: every screen update came as NSCodec at colour loss level 3 with chroma
+// subsampling (rdper gateway measurement, 2026-11-03 20:22), so a still picture in the remote session
+// showed flat squares of colour (user). RemoteFX (lossy wavelet) is no longer offered either.
 func newClientBitmapCodecsCapability() *BitmapCodecsCapability {
 	return &BitmapCodecsCapability{
 		SupportedBitmapCodecs: BitmapCodecS{
@@ -660,12 +664,7 @@ func newClientBitmapCodecsCapability() *BitmapCodecsCapability {
 				{
 					GUID:       guidNSCodec,
 					ID:         1,
-					Properties: []byte{1, 1, 3}, // fAllowDynamicFidelity, fAllowSubsampling, colorLossLevel
-				},
-				{
-					GUID:       guidRemoteFX,
-					ID:         3,
-					Properties: buildRemoteFxProperties(),
+					Properties: []byte{0, 0, 1}, // fAllowDynamicFidelity, fAllowSubsampling, colorLossLevel
 				},
 			},
 		},

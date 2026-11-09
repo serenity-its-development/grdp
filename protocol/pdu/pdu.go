@@ -428,6 +428,9 @@ func (c *Client) recvPDU(s []byte) {
 					c.Emit("bitmap", p.(*BitmapUpdateDataPDU).Rectangles)
 				} else if up.UpdateType == FASTPATH_UPDATETYPE_ORDERS {
 					c.Emit("orders", p.(*FastPathOrdersPDU).OrderPdus)
+					if p.(*FastPathOrdersPDU).FrameEnd() {
+						c.Emit("frame_end")
+					}
 				}
 			} else if d.Header.PDUType2 == PDUTYPE2_POINTER {
 				pp := d.Data.(*PointerDataPDU)
@@ -509,6 +512,9 @@ func (c *Client) RecvFastPath(secFlag byte, s []byte) {
 			for _, fid := range result.FrameIDs {
 				c.sendDataPDU(&FrameAcknowledgeDataPDU{FrameID: fid})
 			}
+			if len(result.FrameIDs) > 0 {
+				c.Emit("frame_end") // every surface bits command of the frame has been delivered
+			}
 			continue
 		}
 
@@ -524,6 +530,9 @@ func (c *Client) RecvFastPath(secFlag byte, s []byte) {
 			c.Emit("color", p.Data.(*FastPathColorPdu))
 		} else if updateCode == FASTPATH_UPDATETYPE_ORDERS {
 			c.Emit("orders", p.Data.(*FastPathOrdersPDU).OrderPdus)
+			if p.Data.(*FastPathOrdersPDU).FrameEnd() {
+				c.Emit("frame_end")
+			}
 		} else if updateCode == FASTPATH_UPDATETYPE_PTR_NULL {
 			c.Emit("pointer_hide")
 		} else if updateCode == FASTPATH_UPDATETYPE_PTR_POSITION {

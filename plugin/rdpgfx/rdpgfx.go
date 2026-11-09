@@ -851,6 +851,7 @@ func (g *GfxHandler) Process(data []byte) {
 		// ACK any EndFrame PDUs so the server's outstanding-frame
 		// count stays accurate and it keeps sending.
 		slog.Warn("RDPGFX: decodeCh full, dropping frame (ACKs preserved)", "queueCap", cap(g.decodeCh))
+		noteDroppedFrame()
 		g.ackDroppedFrames(pkt)
 	}
 }
@@ -1361,6 +1362,7 @@ func (g *GfxHandler) onWireToSurface1Decode(data []byte, skipHeavy bool) {
 		return
 	}
 	bmpData := data[17 : 17+int(bmpLen)]
+	noteSurfaceCommand(codecId, bmpData) // codingstats.go (measurement only)
 
 	if slog.Default().Enabled(nil, slog.LevelDebug) {
 		slog.Debug("RDPGFX: WTS1", "surfId", surfId, "codecId", codecId,
@@ -1529,6 +1531,7 @@ func (g *GfxHandler) onWireToSurface2Decode(data []byte, skipHeavy bool) {
 		return
 	}
 	bmpData := data[13 : 13+int(bmpLen)]
+	noteSurfaceCommand(codecId, bmpData) // codingstats.go (measurement only)
 
 	s, ok := g.surfaces[surfId]
 	if !ok {

@@ -472,6 +472,7 @@ func (c *MCSClient) sendChannelJoinRequest(channelId uint16) {
 }
 
 func (c *MCSClient) recvData(s []byte) {
+	noteReceived(len(s)) // autodetectlog.go (measurement only)
 	r := bytes.NewReader(s)
 	option, err := core.ReadUInt8(r)
 	if err != nil {
@@ -598,10 +599,11 @@ func (c *MCSClient) handleAutoDetect(data []byte) {
 	core.ReadUInt8(r)        // headerTypeId
 	seqNum, _ := core.ReadUint16LE(r)
 	reqType, _ := core.ReadUint16LE(r)
+	noteAutoDetect(reqType, r) // autodetectlog.go (measurement only; reads past the request type)
 
 	switch reqType {
 	case rdpRttRequestConnecttime, rdpRttRequest:
-		c.sendAutoDetectResponse(seqNum, rdpRttResponseType, 0)
+		c.sendAutoDetectResponse(seqNum, rdpRttResponseType, 0, 0)
 	case rdpBwStartConnecttime, rdpBwStart:
 		c.bwStartTime = time.Now()
 	case rdpBwStopConnecttime:
@@ -609,13 +611,13 @@ func (c *MCSClient) handleAutoDetect(data []byte) {
 		if elapsed == 0 {
 			elapsed = 1
 		}
-		c.sendAutoDetectResponse(seqNum, rdpBwResultsConnecttime, elapsed)
+		c.sendAutoDetectResponse(seqNum, rdpBwResultsConnecttime, elapsed, uint32(bwMeasuredBytes()))
 	case rdpBwStop:
 		elapsed := uint32(time.Since(c.bwStartTime).Milliseconds())
 		if elapsed == 0 {
 			elapsed = 1
 		}
-		c.sendAutoDetectResponse(seqNum, rdpBwResults, elapsed)
+		c.sendAutoDetectResponse(seqNum, rdpBwResults, elapsed, uint32(bwMeasuredBytes()))
 		// rdpBwPayload requires no response
 	}
 }
@@ -623,7 +625,7 @@ func (c *MCSClient) handleAutoDetect(data []byte) {
 // sendAutoDetectResponse sends an auto-detect response on the message channel.
 // timeDelta is 0 for RTT responses (no BW fields); non-zero for BW responses
 // (timeDelta in milliseconds since the corresponding BW_START was received).
-func (c *MCSClient) sendAutoDetectResponse(sequenceNumber uint16, responseType uint16, timeDelta uint32) {
+func (c *MCSClient) sendAutoDetectResponse(sequenceNumber uint16, responseType uint16, timeDelta, byteCount uint32) {
 	includeBW := responseType == rdpBwResultsConnecttime || responseType == rdpBwResults
 	headerLength := uint8(6)
 	if includeBW {
@@ -639,7 +641,7 @@ func (c *MCSClient) sendAutoDetectResponse(sequenceNumber uint16, responseType u
 	core.WriteUInt16LE(responseType, payload)
 	if includeBW {
 		core.WriteUInt32LE(timeDelta, payload) // timeDelta in milliseconds
-		core.WriteUInt32LE(0, payload)         // byteCount (no BW_PAYLOAD was sent)
+		core.WriteUInt32LE(byteCount, payload) // bytes received during the burst (autodetectlog.go)
 	}
 
 	c.transport.Write(c.Pack(payload.Bytes(), c.messageChannelId))

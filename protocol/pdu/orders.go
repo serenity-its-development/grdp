@@ -134,6 +134,19 @@ func (o *OrderPdu) HasBounds() bool {
 }
 
 type Altsec struct {
+	// FrameEnd is set for an ORDER_TYPE_FRAME_MARKER whose action is TS_FRAME_END: every
+	// drawing order of the server's frame has been delivered.
+	FrameEnd bool
+}
+
+// FrameEnd reports whether any order in the update closes a server frame.
+func (f *FastPathOrdersPDU) FrameEnd() bool {
+	for i := range f.OrderPdus {
+		if a := f.OrderPdus[i].Altsec; a != nil && a.FrameEnd {
+			return true
+		}
+	}
+	return false
 }
 
 type Secondary struct {
@@ -199,7 +212,11 @@ func (o *OrderPdu) processAltsecOrder(r io.Reader) error {
 	case ORDER_TYPE_WINDOW:
 	case ORDER_TYPE_COMPDESK_FIRST:
 	case ORDER_TYPE_FRAME_MARKER:
-		core.ReadUInt32LE(r)
+		// MS-RDPEGDI 2.2.2.2.1.3.7 TS_FRAME_MARKER: action 0x0000 begins a frame, 0x0001 ends it.
+		action, _ := core.ReadUInt32LE(r)
+		if action == 0x0001 {
+			o.Altsec = &Altsec{FrameEnd: true}
+		}
 	}
 
 	return nil

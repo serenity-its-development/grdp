@@ -64,6 +64,11 @@ type RdpClient struct {
 	user     string
 	password string
 
+	// initial program (Client Info AlternateShell/WorkingDir), set via SetInitialProgram
+	// before Login; empty = normal desktop shell.
+	initialProgram string
+	initialDir     string
+
 	// stored callbacks for re-registration on reconnect
 	onErrorFn         func(e error)
 	onCloseFn         func()
@@ -317,6 +322,9 @@ func (g *RdpClient) doLogin(routingToken []byte) error {
 	g.x224 = x224.New(g.tpkt)
 	g.mcs = t125.NewMCSClient(g.x224, g.kbdLayout, g.keyboardType, g.keyboardSubType)
 	g.sec = sec.NewClient(g.mcs)
+	if g.initialProgram != "" {
+		g.sec.SetInitialProgram(g.initialProgram, g.initialDir)
+	}
 	g.pdu = pdu.NewClient(g.sec)
 	g.channels = plugin.NewChannels(g.sec)
 
@@ -583,6 +591,13 @@ func (g *RdpClient) Height() int {
 	return g.height
 }
 
+// SetInitialProgram must be called before Login. The session then launches only `program`
+// (with optional working dir) in place of the desktop shell — a single-app logon that logs
+// off when the program exits. Empty program = normal desktop.
+func (g *RdpClient) SetInitialProgram(program, dir string) {
+	g.initialProgram, g.initialDir = program, dir
+}
+
 // ForceRefresh asks the server for a complete display repaint via the
 // suppress→allow output toggle (the same primitive grdp uses internally
 // to recover from H.264 decoder stalls). Useful at session start to make
@@ -652,6 +667,9 @@ func (g *RdpClient) OnBitmap(paint func([]Bitmap)) *RdpClient {
 			data := v.BitmapDataStream
 			Bpp := bpp(v.BitsPerPixel)
 
+			if v.Flags&pdu.BITMAP_NO_PROCESSING == 0 { // a bitmap update, as Windows sent it (measurement only)
+				pdu.NoteBitmap(v.BitsPerPixel, v.IsCompress(), v.BitmapDataStream, int(v.Width), int(v.Height))
+			}
 			if v.Flags&pdu.BITMAP_NO_PROCESSING != 0 {
 				// Surface command: data is already decoded top-down BGRA
 			} else if v.IsCompress() {
@@ -688,6 +706,12 @@ func (g *RdpClient) OnBitmap(paint func([]Bitmap)) *RdpClient {
 		for _, buf := range pooled {
 			g.decompressPool.Put(buf[:cap(buf)])
 		}
+	})
+	// The legacy update path's frame boundary (a surface-bits frame marker or a TS_FRAME_MARKER
+	// order with action END): delivered as an empty paint, the same marker the graphics pipeline
+	// sends after its EndFrame, so the embedder can present complete frames on either path.
+	g.pdu.On("frame_end", func() {
+		paint(nil)
 	})
 	return g
 }
