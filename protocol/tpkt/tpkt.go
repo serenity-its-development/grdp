@@ -1,6 +1,7 @@
 package tpkt
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -134,7 +135,7 @@ func (t *TPKT) StartNLA() error {
 		return err
 	}
 	slog.Debug("StartNLA: TLS handshake complete")
-	req := nla.EncodeDERTRequest([]nla.Message{t.ntlm.GetNegotiateMessage()}, nil, nil)
+	req := nla.EncodeDERTRequest([]nla.Message{t.ntlm.GetNegotiateMessage()}, nil, nil, nil)
 	slog.Debug("StartNLA send", "req", core.Hex(req), "len", len(req))
 	_, err = t.Conn.Write(req)
 	if err != nil {
@@ -168,8 +169,14 @@ func (t *TPKT) recvChallenge(data []byte) error {
 	authMsg, ntlmSec := t.ntlm.GetAuthenticateMessage(tsreq.NegoTokens[0].Data)
 	t.ntlmSec = ntlmSec
 
-	encryptPubkey := ntlmSec.GssEncrypt(pubkey)
-	req := nla.EncodeDERTRequest([]nla.Message{authMsg}, nil, encryptPubkey)
+	// CredSSP v5+ public-key auth: seal SHA256(magic || clientNonce || serverPubKey),
+	// not the bare key. Required by "updated" (Encryption Oracle Remediation) servers.
+	clientNonce := core.Random(32)
+	bind := append([]byte("CredSSP Client-To-Server Binding Hash\x00"), clientNonce...)
+	bind = append(bind, pubkey...)
+	bindHash := sha256.Sum256(bind)
+	encryptPubkey := ntlmSec.GssEncrypt(bindHash[:])
+	req := nla.EncodeDERTRequest([]nla.Message{authMsg}, nil, encryptPubkey, clientNonce)
 	slog.Debug("recvChallenge", "send", core.Hex(req), "len", len(req))
 	_, err = t.Conn.Write(req)
 	if err != nil {
@@ -202,7 +209,7 @@ func (t *TPKT) recvPubKeyInc(data []byte) error {
 	domain, username, password := t.ntlm.GetEncodedCredentials()
 	credentials := nla.EncodeDERTCredentials(domain, username, password)
 	authInfo := t.ntlmSec.GssEncrypt(credentials)
-	req := nla.EncodeDERTRequest(nil, authInfo, nil)
+	req := nla.EncodeDERTRequest(nil, authInfo, nil, nil)
 	_, err = t.Conn.Write(req)
 	if err != nil {
 		slog.Debug("send AuthenticateMessage", "err", err)
